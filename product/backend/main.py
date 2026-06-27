@@ -1,8 +1,6 @@
-import os
 import json
-import urllib.parse
+import re
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -119,7 +117,6 @@ async def call_llm(provider: str, api_key: str, model: str, schema: str, questio
     try:
         return json.loads(clean)
     except json.JSONDecodeError:
-        import re
         match = re.search(r"\{[\s\S]*\}", clean)
         if match:
             return json.loads(match.group())

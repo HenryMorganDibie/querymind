@@ -1,300 +1,267 @@
 <div align="center">
 
-# ◈ DataSpeak / Intelligent Analytics Assistant
+# ◈ QueryMind
 
-**Ask your database questions in plain English. Get answers in plain English.**
+**Ask your database anything. Get answers in plain English.**
 
-[![Demo Video](https://img.shields.io/badge/DEMO-Watch_on_Drive-red?style=for-the-badge&logo=googledrive)](https://drive.google.com/file/d/1YivR_t3VJO-8fq8rkfKJCjIIf5k0ctCw/view?usp=sharing)
-![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi&logoColor=white)
-![React](https://img.shields.io/badge/React-18+-61DAFB?style=flat-square&logo=react&logoColor=black)
+[![Live Demo](https://img.shields.io/badge/DEMO-Watch_on_Drive-red?style=for-the-badge&logo=googledrive)](https://drive.google.com/file/d/1YivR_t3VJO-8fq8rkfKJCjIIf5k0ctCw/view?usp=sharing)
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)
+![Vite](https://img.shields.io/badge/Vite-5-646CFF?style=flat-square&logo=vite&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
 </div>
 
 ---
 
-## What is this?
+## What is QueryMind?
 
-This repo contains two layers of the same idea, built progressively:
+QueryMind is an AI-powered data analyst for business owners, founders, and operators who work with SQL databases but don't write SQL themselves.
 
-| Layer | What it is | Where |
-|---|---|---|
-| **Original backend** | FastAPI + Streamlit Text-to-SQL app wired to a 1.3M-row MySQL database | `backend/` · `frontend/` |
-| **DataSpeak product** | Schema-agnostic React UI — any user pastes their own SQL schema and queries it in plain English | `dataspeak/` |
+You paste your database schema (the `CREATE TABLE` statements). You ask a question in plain English — *"Which product makes me the most money?"*, *"Why did revenue drop last month?"*, *"Who are my top 10 customers?"*. QueryMind writes the SQL, runs it, and comes back with a headline finding, a chart, key numbers, and a plain-English narrative that explains what the data actually means for your business.
 
-The core insight: most people who work with data are not SQL writers. They know what question they want answered — they just can't express it in a query. Both layers solve this. DataSpeak takes it further by removing the dependency on any specific database.
+It is not a chatbot. It behaves like a senior analyst who happens to have read every table in your database.
 
 ---
 
 ## How it works
 
 ```
-User types a question in English
+You ask a question in plain English
         ↓
-LLM reads the database schema + question → generates SQL
+Backend reads your schema + question → asks your chosen LLM to write SQL
         ↓
-SQL executes against the database (backend) or simulates results (DataSpeak UI)
+SQL executes against your database (or generates realistic mock data in schema-only mode)
         ↓
-LLM interprets the result rows → writes an English narrative
+LLM interprets the result rows → writes a business narrative
         ↓
-User sees: headline insight + chart/table + plain English explanation + collapsible SQL
+Frontend renders: headline · key metrics · chart · narrative · SQL (collapsible)
 ```
 
-The key upgrade over a standard Text-to-SQL tool is the **narration step**. Instead of returning raw rows, the system tells you what the data *means* — the business story behind the numbers.
+You bring your own LLM API key — Claude, Groq, or OpenAI. QueryMind never stores it.
 
 ---
 
-## Repository structure
+## Repository layout
 
 ```
 intelligent-analytics-assistant/
 │
-├── backend/
-│   └── main.py              # FastAPI app — receives question, generates SQL, executes, returns results
+├── product/                        ← deployable product (start here)
+│   ├── frontend/                   → Vite + React → deploy to Vercel
+│   │   ├── src/QueryMind.jsx       → full UI: landing, API key, connect, analyst chat
+│   │   ├── src/main.jsx
+│   │   ├── index.html
+│   │   ├── package.json
+│   │   ├── vite.config.js
+│   │   └── vercel.json
+│   │
+│   ├── backend/                    → FastAPI → deploy to Render (free) or any server
+│   │   ├── main.py                 → LLM routing, SQL execution, schema introspection
+│   │   ├── requirements.txt
+│   │   ├── Procfile
+│   │   ├── render.yaml
+│   │   └── railway.json
+│   │
+│   └── DEPLOY.md                   → step-by-step deployment guide
 │
-├── frontend/
-│   └── app.py               # Streamlit chat interface — sends questions, displays SQL + tables
+├── backend/                        ← original prototype (hardcoded MySQL + Gemini)
+│   └── main.py
 │
-├── dataspeak/
-│   ├── DataSpeak.jsx        # Production React component — schema-agnostic, English narration, auto-charts
-│   └── README.md            # DataSpeak-specific docs and integration path
+├── frontend/                       ← original Streamlit frontend
+│   └── app.py
 │
-├── data_loader.py           # One-time script: loads Excel data into MySQL (orders, order_items, meetings)
-├── .gitignore
-└── README.md                # This file
+├── dataspeak/                      ← earlier standalone component iterations
+│   ├── DataSpeak.jsx
+│   └── QueryMind.jsx
+│
+├── data_loader.py                  ← one-time script: loads Excel data into MySQL
+├── LICENSE
+└── README.md
 ```
 
 ---
 
-## Original backend — Quick start
+## Deploying (10 minutes)
 
-The original stack runs against a specific MySQL database populated from Excel files.
+Full instructions are in [`product/DEPLOY.md`](product/DEPLOY.md). Short version:
 
-### Prerequisites
+### Backend → Render (free tier)
 
-- Python 3.10+
-- MySQL Server (running locally or remote)
-- A Google Gemini API key **or** Ollama running locally
+1. [render.com](https://render.com) → **New Web Service** → connect this repo
+2. Root directory: `product/backend`
+3. Build command: `pip install -r requirements.txt`
+4. **Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`**
+5. Plan: **Free** → Deploy
+6. Copy your Render URL once it's live
 
-### 1. Clone and install
+### Frontend → Vercel (free)
+
+1. [vercel.com](https://vercel.com) → **New Project** → import this repo
+2. Root directory: `product/frontend`
+3. Environment variable: `VITE_BACKEND_URL` = your Render URL
+4. Deploy
+
+Open your Vercel URL. Done.
+
+---
+
+## Running locally
 
 ```bash
-git clone https://github.com/HenryMorganDibie/intelligent-analytics-assistant.git
-cd intelligent-analytics-assistant
-
-python -m venv .venv
-# Windows:
-.\.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-
+# Backend
+cd product/backend
 pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+
+# Frontend (separate terminal)
+cd product/frontend
+npm install
+echo "VITE_BACKEND_URL=http://localhost:8000" > .env.local
+npm run dev
 ```
 
-### 2. Configure environment
+Open [http://localhost:3000](http://localhost:3000)
 
-Create a `.env` file in the project root:
+---
 
-```env
-# Database
-DB_NAME=analytics_db
-DB_USER=root
-DB_PASS=your_password
-DB_HOST=localhost
-DB_PORT=3306
+## User flow
 
-# LLM — set USE_GEMINI=True to use Gemini, False to use local Ollama
-USE_GEMINI=True
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash
-
-# Ollama (only needed if USE_GEMINI=False)
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=tinyllama
+```
+Landing page
+    ↓ "Try free"
+Choose AI provider
+    → Claude (Anthropic) — best reasoning
+    → Groq — free tier, fastest (get key at console.groq.com, no card needed)
+    → OpenAI (ChatGPT) — widely familiar
+    ↓ Paste API key (masked) → Test key → Continue
+Connect your database
+    → Pick a template (e-commerce, SaaS, restaurant)
+    → Paste your own CREATE TABLE statements
+    → Upload a .sql file
+    ↓
+Analyst chat
+    → Ask questions in plain English
+    → Get: headline + key metrics + chart + narrative + SQL
+    → Ask follow-ups
 ```
 
-### 3. Load data
+---
 
-Place your Excel files in a `data/` directory, then run:
+## Backend API
 
-```bash
-python data_loader.py
+### `POST /query/schema`
+Schema-only mode. No live database needed. LLM generates SQL and realistic mock data.
+
+```json
+{
+  "question": "Which product category makes the most money?",
+  "schema_ddl": "CREATE TABLE orders (...); CREATE TABLE order_items (...);",
+  "provider": "groq",
+  "api_key": "gsk_...",
+  "model": "llama-3.3-70b-versatile"
+}
 ```
 
-This creates three tables in MySQL: `orders`, `order_items`, `customer_meetings` (1.3M+ rows total).
+Response includes: `sql`, `data`, `keyMetrics`, `headline`, `narrative`, `confidence`, `vizType`
 
-### 4. Run
+### `POST /query/live`
+Live database mode. Connects to a real database, executes the generated SQL, narrates real results.
 
-Open two terminals:
-
-```bash
-# Terminal 1 — backend
-uvicorn backend.main:app --reload
-
-# Terminal 2 — frontend
-streamlit run frontend/app.py
+```json
+{
+  "question": "What is my monthly revenue trend?",
+  "connection_string": "postgresql://user:pass@host:5432/mydb",
+  "provider": "claude",
+  "api_key": "sk-ant-...",
+  "model": "claude-sonnet-4-6"
+}
 ```
 
-Open `http://localhost:8501` in your browser.
+### `POST /introspect`
+Auto-detects schema from a live database connection string. Returns `schema_ddl` and table list.
 
-### Example questions
+### `GET /`
+Health check. Returns `{"status": "ok"}`.
 
-| Question | SQL pattern used |
+---
+
+## Supported LLM providers
+
+| Provider | Free tier | Models |
+|---|---|---|
+| **Groq** | Yes — [console.groq.com](https://console.groq.com) | Llama 3.3 70B, Llama 3.1 8B, Mixtral 8x7B |
+| **Claude** | No — [console.anthropic.com](https://console.anthropic.com) | Claude Sonnet 4.6, Claude Haiku 4.5 |
+| **OpenAI** | No — [platform.openai.com](https://platform.openai.com) | GPT-4o, GPT-4o Mini |
+
+Groq is the easiest starting point — free tier, no credit card, key in 30 seconds.
+
+---
+
+## Supported databases (live mode)
+
+| Database | Connection string format |
 |---|---|
-| "What is the total quantity of all orders?" | `SUM()` aggregate |
-| "Average order value for customers who never had a meeting?" | `LEFT JOIN ... WHERE IS NULL` |
-| "For each customer, show their meeting date and the previous one" | `LAG()` window function with CTE |
-| "Top 5 product categories by revenue?" | `GROUP BY` + `ORDER BY` + `LIMIT` |
+| PostgreSQL | `postgresql://user:pass@host:5432/dbname` |
+| MySQL | `mysql+pymysql://user:pass@host:3306/dbname` |
+| SQLite | `sqlite:///path/to/file.db` |
+
+More can be added by installing the relevant SQLAlchemy dialect driver.
 
 ---
 
-## DataSpeak — Schema-agnostic product layer
+## Security
 
-DataSpeak removes the hardcoded database dependency. Any user can bring their own schema.
-
-### How to use DataSpeak
-
-1. Open `dataspeak/DataSpeak.jsx`
-2. Drop it into any React project (see dependencies below)
-3. Paste any `CREATE TABLE` DDL into the setup screen
-4. Ask questions in plain English
-
-### Dependencies
-
-```bash
-npm install recharts
-```
-
-The component uses:
-- `recharts` for auto-detected visualizations (bar, line, pie, table)
-- `fetch` to call the Anthropic API directly (`claude-sonnet-4-6`)
-- No other external dependencies
-
-### Connecting to a real database (production path)
-
-The DataSpeak component currently generates mock result data alongside the SQL. To connect it to a live database, replace the Anthropic API call with a call to your own backend:
-
-```python
-# FastAPI endpoint — drop-in replacement
-@app.post("/query")
-async def query(request: QueryRequest):
-    # Step 1: Claude generates SQL from the user's schema + question
-    sql = await generate_sql(request.question, request.schema)
-
-    # Step 2: SQLAlchemy executes it against the real DB
-    data = await execute_sql(sql, db_connection)
-
-    # Step 3: Claude narrates the result rows in plain English
-    narrative = await narrate_results(data, request.question)
-
-    return {"sql": sql, "data": data, "narrative": narrative, "headline": narrative[:60]}
-```
-
-The React component's `ask()` function accepts this response shape with no changes needed.
-
-### Supported database dialects
-
-The SQL generation prompt uses standard SQL. It has been tested with:
-- MySQL / MariaDB
-- PostgreSQL
-- SQLite
-
-For dialect-specific features (e.g. `ILIKE` in Postgres, `STRFTIME` in SQLite), add a dialect hint to the system prompt inside `DataSpeak.jsx`.
-
----
-
-## Architecture diagram
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     User Interface                       │
-│         Streamlit (original) │ React/DataSpeak           │
-└──────────────────┬──────────────────────────────────────┘
-                   │ Natural language question
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│                    LLM Layer                             │
-│   Gemini 2.5 Flash │ Ollama/TinyLlama │ Claude Sonnet   │
-│                                                          │
-│  Input:  schema + question                               │
-│  Output: raw SQL query                                   │
-└──────────────────┬──────────────────────────────────────┘
-                   │ SQL string
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Execution Layer                        │
-│              FastAPI + SQLAlchemy + MySQL                │
-│                                                          │
-│  Executes query → returns rows as JSON                   │
-└──────────────────┬──────────────────────────────────────┘
-                   │ Result rows
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Narration Layer (DataSpeak)             │
-│                    Claude Sonnet                         │
-│                                                          │
-│  Input:  result rows + original question                 │
-│  Output: English headline + insight narrative            │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## LLM configuration
-
-The original backend supports two engines switchable via `.env`:
-
-**Gemini 2.5 Flash** (recommended for accuracy)
-- Requires a Google AI Studio API key
-- Set `USE_GEMINI=True`
-
-**Ollama / TinyLlama** (free, runs locally, no API key needed)
-- Requires [Ollama](https://ollama.com) installed and running
-- Pull the model: `ollama pull tinyllama`
-- Set `USE_GEMINI=False`
-
-DataSpeak uses the Anthropic Claude API (`claude-sonnet-4-6`) for both SQL generation and English narration.
+- API keys are entered by the user in the browser, sent to the backend for a single request, and never stored
+- The backend holds a key only for the duration of one HTTP call
+- No database credentials are stored — connection strings are passed per-request in live mode
+- CORS is currently open (`*`) — before going to production, set `ALLOWED_ORIGIN` in your backend environment to your Vercel domain
 
 ---
 
 ## Roadmap
 
-Things that would make this a proper SaaS product:
+- [ ] Live database connection via UI (currently schema-paste only in frontend)
+- [ ] Multi-turn conversation with memory of previous results
+- [ ] Query history saved per session
+- [ ] Export to CSV / PDF
+- [ ] Auth + per-user workspaces
+- [ ] Dialect selector (BigQuery, Snowflake, DuckDB)
+- [ ] Confidence-based SQL retry on execution failure
 
-- [ ] Live database connection via connection string (not just schema paste)
-- [ ] Query history and saved questions
-- [ ] Export results to CSV / PDF
-- [ ] Multi-turn conversation with follow-up questions referencing previous results
-- [ ] Auth layer (JWT or OAuth) with per-user schema storage
-- [ ] Support for multiple schemas / databases per user
-- [ ] Confidence scoring — flag when generated SQL is uncertain
-- [ ] Dialect selector (MySQL / PostgreSQL / SQLite / BigQuery)
+---
+
+## Original prototype
+
+The `backend/` and `frontend/` folders at the root contain the original proof-of-concept: a Streamlit UI + FastAPI backend hardwired to a specific MySQL database with 1.3M rows, using Gemini or Ollama for SQL generation. Setup instructions for that version are in the original commit history.
+
+The `product/` folder is the current, deployable version.
 
 ---
 
 ## Contributing
 
-This is open source. PRs are welcome on any part of the stack.
+PRs welcome. Most useful contributions right now:
 
-If you're building on top of DataSpeak, the most valuable contributions right now are:
+1. **Live DB UI** — wire the Connect page to send a real connection string and use `/query/live`
+2. **SQL retry** — if execution fails, re-prompt the LLM with the error message and retry once
+3. **Dialect support** — test SQL generation accuracy for PostgreSQL-specific syntax
 
-1. **Real DB connector** — wire the React component to a live FastAPI + SQLAlchemy backend
-2. **Dialect support** — test and document SQL generation accuracy across PostgreSQL, SQLite, BigQuery
-3. **Narration quality** — improve the system prompt to produce more actionable English insights
-
-Open an issue before large PRs so we can align on direction.
+Open an issue before large PRs.
 
 ---
 
 ## License
 
-MIT — use it, fork it, build on it.
+MIT — use it, fork it, build products with it.
 
 ---
 
 <div align="center">
 
-Built by **[Henry Dibie](https://linkedin.com/in/kinghenrymorgan)** · [GitHub](https://github.com/HenryMorganDibie) · [LinkedIn](https://linkedin.com/in/kinghenrymorgan)
+Built by **[Henry Dibie](https://linkedin.com/in/kinghenrymorgan)**
+
+[GitHub](https://github.com/HenryMorganDibie) · [LinkedIn](https://linkedin.com/in/kinghenrymorgan)
 
 </div>
