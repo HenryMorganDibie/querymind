@@ -185,8 +185,9 @@ class SchemaIntrospectRequest(BaseModel):
     connection_string: str
 
 class DashboardRequest(BaseModel):
-    schema_ddl: str
-    focus: Optional[str] = None   # e.g. "revenue", "customers", "products" — optional focus area
+    schema_ddl: Optional[str] = None   # for schema/SQL mode
+    session_id: Optional[str] = None   # for file mode
+    focus: Optional[str] = None
     provider: Optional[str] = None
     api_key:  Optional[str] = None
     model:    Optional[str] = None
@@ -471,7 +472,7 @@ Key metrics extracted:
 
 Write an honest, accurate business interpretation grounded entirely in this data."""
 
-    narr_raw = await raw_llm_call(provider, api_key, model, NARRATIVE_SYSTEM, narrative_user_msg, max_tokens=1000)
+    narr_raw = await raw_llm_call(provider, api_key, model, NARRATIVE_SYSTEM, narrative_user_msg, max_tokens=2000)
     narr_result = parse_json_response(narr_raw)
 
     return {
@@ -869,7 +870,7 @@ REAL data returned ({result_row_count} rows from {row_count:,} total rows in fil
 
 This is real data from the user's actual file. Every claim must be grounded in these exact numbers."""
 
-    narr_raw = await raw_llm_call(provider, api_key, model, NARRATIVE_SYSTEM, narrative_user, max_tokens=1000)
+    narr_raw = await raw_llm_call(provider, api_key, model, NARRATIVE_SYSTEM, narrative_user, max_tokens=2000)
     narr_result = parse_json_response(narr_raw)
 
     return {
@@ -1003,41 +1004,81 @@ async def generate_dashboard(
     req: DashboardRequest,
     user: Optional[dict] = Depends(get_optional_user)
 ):
-    """
-    Generates a complete multi-panel business dashboard from a schema.
-    Each panel has its own SQL, data, chart type, headline, and narrative.
-    Returns 4-6 panels covering different business angles.
-    """
     provider, api_key, model = resolve_llm_config(req.provider, req.api_key, req.model, user)
 
+    # Resolve schema — either from file session or direct DDL
+    is_file = bool(req.session_id)
+    if is_file:
+        session = file_sessions.get(req.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="File session not found. Please re-upload your file.")
+        schema_ddl  = session["schema_ddl"]
+        table_name  = session["table_name"]
+        file_path   = session["path"]
+        suffix      = session["suffix"]
+        row_count   = session["row_count"]
+    else:
+        if not req.schema_ddl:
+            raise HTTPException(status_code=400, detail="Either schema_ddl or session_id is required")
+        schema_ddl = req.schema_ddl
+
     focus_clause = f"\n\nFocus area: {req.focus}" if req.focus else ""
-    question = f"Generate a complete business dashboard for this schema.{focus_clause}"
+    question = f"Generate a complete business dashboard for this {'dataset' if is_file else 'schema'}.{focus_clause}"
 
     try:
         raw = await call_llm(
             provider, api_key, model,
-            req.schema_ddl, question,
+            schema_ddl, question,
             system_override=DASHBOARD_SYSTEM_PROMPT
         )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=f"LLM error: {e.response.text[:300]}")
 
-    # Validate each panel's SQL
+    # Validate and optionally execute each panel's SQL
     if "panels" in raw:
         for panel in raw["panels"]:
             sql = panel.get("sql", "")
-            if sql:
+            if not sql:
+                continue
+            # Safety check
+            try:
+                sql = validate_sql(sql)
+                panel["sql"] = sql
+            except HTTPException as e:
+                panel["sql"] = ""
+                panel["headline"] = "Query blocked for safety"
+                panel["narrative"] = f"The generated query was blocked: {e.detail}"
+                panel["confidence"] = "low"
+                continue
+
+            # For file mode — execute real SQL against the actual data
+            if is_file:
                 try:
-                    panel["sql"] = validate_sql(sql)
-                except HTTPException as e:
-                    # Don't fail the whole dashboard — mark the panel as unsafe
-                    panel["sql"] = ""
-                    panel["headline"] = "Query blocked for safety"
-                    panel["narrative"] = f"The generated query was blocked: {e.detail}"
+                    con = duckdb.connect()
+                    if suffix == ".csv":
+                        con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_csv_auto('{file_path}', header=true, sample_size=10000)")
+                    elif suffix == ".tsv":
+                        con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_csv_auto('{file_path}', header=true, delim='\\t', sample_size=10000)")
+                    elif suffix == ".parquet":
+                        con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{file_path}')")
+                    elif suffix in (".xlsx", ".xls"):
+                        parquet_path = str(file_path).replace(suffix, ".parquet")
+                        con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')")
+                    elif suffix == ".json":
+                        con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_ndjson_auto('{file_path}')")
+
+                    result_df = con.execute(sql).fetchdf()
+                    con.close()
+                    panel["data"] = result_df.to_dict(orient="records")[:100]
+                    panel["confidence"] = "high"  # real data
+                    panel["mode"] = "file"
+                except duckdb.Error as e:
+                    panel["narrative"] = f"Query executed but returned an error: {str(e)[:200]}"
                     panel["confidence"] = "low"
 
     return {
         "mode": "dashboard",
+        "is_file": is_file,
         "tier": "pro" if (user and user.get("is_pro")) else "free",
         **raw
     }

@@ -982,13 +982,17 @@ function AnalystPage({ db, llmConfig, user, onBack }) {
     setDashLoading(true);
     setMessages(prev => [...prev, {id:idRef.current++, role:"user", text:"Generate a complete business dashboard for this database."}]);
 
-    const phases = ["Analysing your schema…","Planning dashboard panels…","Building charts…","Writing insights…"];
+    const phases = ["Analysing your data…","Planning dashboard panels…","Building charts…","Writing insights…"];
     let pi = 0; setLoadingText(phases[0]);
     const iv = setInterval(() => { pi=(pi+1)%phases.length; setLoadingText(phases[pi]); }, 2000);
 
     try {
+      const isFile = db.mode === "file";
       const body = {
-        schema_ddl: db.schema,
+        ...(isFile
+          ? { session_id: db.sessionId }
+          : { schema_ddl: db.schema }
+        ),
         ...(llmConfig ? { provider: llmConfig.provider, api_key: llmConfig.apiKey, model: llmConfig.model } : {}),
       };
       const result = await apiFetch("/dashboard", { method:"POST", body: JSON.stringify(body) });
