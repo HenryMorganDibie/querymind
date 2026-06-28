@@ -119,6 +119,7 @@ function setAuth(token, user) {
 }
 
 function clearAuth() { setAuth(null, null); }
+function signOut() { clearAuth(); }
 
 function useAuth() {
   const [user, setUser] = useState(_authUser);
@@ -478,6 +479,7 @@ function AuthPage({ onAuth, onBack }) {
 
 // ─── LANDING PAGE ─────────────────────────────────────────────────────────────
 function LandingPage({ onStart, onSignIn }) {
+  const user = useAuth();
   return (
     <div style={{minHeight:"100vh",background:T.bg,color:T.white,fontFamily:"'DM Sans',system-ui,sans-serif",display:"flex",flexDirection:"column"}}>
       <style>{GLOBAL_CSS}</style>
@@ -490,8 +492,13 @@ function LandingPage({ onStart, onSignIn }) {
         </div>
         <div style={{display:"flex",gap:"24px",alignItems:"center"}}>
           <button onClick={()=>document.getElementById("pricing")?.scrollIntoView({behavior:"smooth"})} style={{background:"none",border:"none",color:T.muted,fontSize:"14px"}}>Pricing</button>
-          <button onClick={onSignIn} style={{background:"none",border:"none",color:T.white,fontSize:"14px",fontWeight:500}}>Sign in</button>
-          <button onClick={onStart} style={{background:T.amber,color:T.bg,border:"none",borderRadius:"8px",padding:"9px 20px",fontSize:"14px",fontWeight:600}}>Try free →</button>
+          {user
+            ? <button onClick={signOut} style={{background:"none",border:"none",color:T.muted,fontSize:"14px"}}>Sign out ({user.email.split("@")[0]})</button>
+            : <button onClick={onSignIn} style={{background:"none",border:"none",color:T.white,fontSize:"14px",fontWeight:500}}>Sign in</button>
+          }
+          <button onClick={onStart} style={{background:T.amber,color:T.bg,border:"none",borderRadius:"8px",padding:"9px 20px",fontSize:"14px",fontWeight:600}}>
+            {user?.is_pro ? "Open analyst →" : "Try free →"}
+          </button>
         </div>
       </nav>
 
@@ -896,6 +903,13 @@ function AnalystPage({ db, llmConfig, user, onBack }) {
             ? <span style={{fontSize:"12px",background:T.amberDim,border:`1px solid ${T.amberBorder}`,color:T.amber,padding:"4px 12px",borderRadius:"20px"}}>◈ Pro</span>
             : llmConfig && <span style={{fontSize:"12px",background:T.surface,border:`1px solid ${T.border}`,color:T.muted,padding:"4px 12px",borderRadius:"20px"}}>{PROVIDERS[llmConfig.provider].logo} {PROVIDERS[llmConfig.provider].name.split(" ")[0]}</span>
           }
+          {user && (
+            <button onClick={() => { signOut(); onBack(); }}
+              style={{background:"none",border:"none",color:T.mutedDark,fontSize:"12px",cursor:"pointer"}}
+              title={`Signed in as ${user.email} — click to sign out`}>
+              {user.email.split("@")[0]} ↗
+            </button>
+          )}
           <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
             <div style={{width:"6px",height:"6px",borderRadius:"50%",background:T.green}}/>
             <span style={{fontSize:"12px",color:T.mutedDark}}>Ready</span>
