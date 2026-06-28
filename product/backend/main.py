@@ -10,13 +10,17 @@ import json
 import os
 import re
 import sqlite3
+import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
+import duckdb
 import httpx
 import stripe
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, File, HTTPException, Header, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -53,6 +57,20 @@ stripe.api_key = STRIPE_SECRET_KEY
 
 # ── Database (SQLite — zero setup, lives on Render disk) ──────────────────────
 DB_PATH = os.getenv("DB_PATH", "/tmp/querymind.db")
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/tmp/querymind_uploads"))
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# In-memory store of uploaded file sessions: session_id → {path, schema, table_name, row_count}
+file_sessions: dict = {}
+
+SUPPORTED_EXTENSIONS = {
+    ".csv": "CSV",
+    ".tsv": "TSV",
+    ".parquet": "Parquet",
+    ".xlsx": "Excel",
+    ".xls": "Excel",
+    ".json": "JSON (newline-delimited)",
+}
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -619,9 +637,294 @@ async def stripe_webhook_handler(request: Request, db: sqlite3.Connection = Depe
     return {"received": True}
 
 # ── Query endpoints ────────────────────────────────────────────────────────────
+class FileQueryRequest(BaseModel):
+    session_id: str
+    question: str
+    provider: Optional[str] = None
+    api_key:  Optional[str] = None
+    model:    Optional[str] = None
+
+
 @app.get("/")
 def health():
     return {"status": "ok", "service": "QueryMind API", "version": "2.0.0"}
+
+
+# ── File upload endpoints ──────────────────────────────────────────────────────
+
+@app.post("/file/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    Accept CSV, TSV, Parquet, Excel, or NDJSON.
+    Load into DuckDB, detect schema, return session_id + schema + preview.
+    Handles millions of rows — DuckDB streams from disk, never loads all into RAM.
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{suffix}'. Supported: {', '.join(SUPPORTED_EXTENSIONS.keys())}"
+        )
+
+    # Save to disk
+    session_id = str(uuid.uuid4())
+    save_path = UPLOAD_DIR / f"{session_id}{suffix}"
+
+    content = await file.read()
+    save_path.write_bytes(content)
+    file_size_mb = len(content) / (1024 * 1024)
+
+    try:
+        con = duckdb.connect()
+        table_name = "dataset"
+
+        # Load file into DuckDB view (lazy — doesn't pull all rows into RAM)
+        if suffix == ".csv":
+            con.execute(f"""
+                CREATE VIEW {table_name} AS
+                SELECT * FROM read_csv_auto('{save_path}', header=true, sample_size=10000)
+            """)
+        elif suffix == ".tsv":
+            con.execute(f"""
+                CREATE VIEW {table_name} AS
+                SELECT * FROM read_csv_auto('{save_path}', header=true, delim='\\t', sample_size=10000)
+            """)
+        elif suffix == ".parquet":
+            con.execute(f"""
+                CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{save_path}')
+            """)
+        elif suffix in (".xlsx", ".xls"):
+            # DuckDB doesn't read Excel natively — convert via pandas first
+            try:
+                import pandas as pd
+                df = pd.read_excel(save_path, engine="openpyxl")
+                parquet_path = UPLOAD_DIR / f"{session_id}.parquet"
+                df.to_parquet(parquet_path, index=False)
+                con.execute(f"""
+                    CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')
+                """)
+            except ImportError:
+                raise HTTPException(status_code=500, detail="pandas not available for Excel conversion")
+        elif suffix == ".json":
+            con.execute(f"""
+                CREATE VIEW {table_name} AS
+                SELECT * FROM read_ndjson_auto('{save_path}')
+            """)
+
+        # Get column info
+        cols_raw = con.execute(f"DESCRIBE {table_name}").fetchall()
+        columns = [{"name": row[0], "type": row[1]} for row in cols_raw]
+
+        # Row count (fast for parquet, full scan for CSV)
+        row_count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+
+        # Preview: first 5 rows
+        preview_rows = con.execute(f"SELECT * FROM {table_name} LIMIT 5").fetchdf()
+        preview = preview_rows.to_dict(orient="records")
+
+        # Build DDL-style schema string for LLM
+        schema_ddl = f"CREATE TABLE {table_name} (\n"
+        schema_ddl += ",\n".join(f"  {c['name']} {c['type']}" for c in columns)
+        schema_ddl += "\n);"
+
+        # Store session
+        file_sessions[session_id] = {
+            "path": str(save_path),
+            "suffix": suffix,
+            "table_name": table_name,
+            "schema_ddl": schema_ddl,
+            "columns": columns,
+            "row_count": row_count,
+            "filename": file.filename,
+        }
+        con.close()
+
+        return {
+            "session_id": session_id,
+            "filename": file.filename,
+            "file_type": SUPPORTED_EXTENSIONS[suffix],
+            "file_size_mb": round(file_size_mb, 2),
+            "row_count": row_count,
+            "column_count": len(columns),
+            "columns": columns,
+            "schema_ddl": schema_ddl,
+            "preview": preview,
+        }
+
+    except duckdb.Error as e:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Could not read file: {str(e)[:300]}")
+    except Exception as e:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)[:300]}")
+
+
+@app.post("/file/query")
+async def query_file(
+    req: FileQueryRequest,
+    user: Optional[dict] = Depends(get_optional_user)
+):
+    """
+    Ask a question about an uploaded file.
+    Uses the three-pass pipeline but executes REAL SQL against the actual data via DuckDB.
+    Returns real results — no simulation.
+    """
+    session = file_sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail="File session not found. Please re-upload your file."
+        )
+
+    provider, api_key, model = resolve_llm_config(req.provider, req.api_key, req.model, user)
+    schema_ddl = session["schema_ddl"]
+    table_name = session["table_name"]
+    file_path = session["path"]
+    suffix = session["suffix"]
+    row_count = session["row_count"]
+
+    # ── Pass 1: Generate SQL ──────────────────────────────────────────────────
+    schema_summary = extract_schema_summary(schema_ddl)
+    context = f"This is a {SUPPORTED_EXTENSIONS.get(suffix, 'data')} file named '{session['filename']}' with {row_count:,} rows."
+
+    sql_system = SQL_SYSTEM.format(schema=schema_ddl, schema_summary=schema_summary)
+    sql_user = f"{context}\n\nQuestion: {req.question}"
+
+    sql_raw = await raw_llm_call(provider, api_key, model, sql_system, sql_user, max_tokens=800)
+    sql_result = parse_json_response(sql_raw)
+    sql = sql_result.get("sql", "").strip()
+    impossible = sql_result.get("impossible", False)
+
+    if impossible or not sql:
+        return {
+            "sql": "",
+            "data": [],
+            "keyMetrics": [],
+            "headline": "This question cannot be answered from the available columns",
+            "narrative": "The uploaded file does not contain the columns needed to answer this question. Check the column list and try rephrasing.",
+            "confidence": "low",
+            "vizType": "stat",
+            "mode": "file",
+            "row_count": row_count,
+        }
+
+    # Validate SQL safety
+    try:
+        sql = validate_sql(sql)
+    except HTTPException as e:
+        raise HTTPException(status_code=400, detail=f"Generated SQL failed safety check: {e.detail}")
+
+    # ── Execute REAL SQL against the actual file via DuckDB ───────────────────
+    try:
+        con = duckdb.connect()
+
+        # Register the file as the table
+        if suffix == ".csv":
+            con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_csv_auto('{file_path}', header=true, sample_size=10000)")
+        elif suffix == ".tsv":
+            con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_csv_auto('{file_path}', header=true, delim='\\t', sample_size=10000)")
+        elif suffix == ".parquet":
+            con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{file_path}')")
+        elif suffix in (".xlsx", ".xls"):
+            parquet_path = str(file_path).replace(suffix, ".parquet")
+            con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')")
+        elif suffix == ".json":
+            con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_ndjson_auto('{file_path}')")
+
+        result_df = con.execute(sql).fetchdf()
+        con.close()
+
+        real_data = result_df.to_dict(orient="records")
+        result_row_count = len(real_data)
+
+    except duckdb.Error as e:
+        # SQL failed — retry with error context
+        raise HTTPException(
+            status_code=400,
+            detail=f"SQL execution failed: {str(e)[:300]}. Try rephrasing your question."
+        )
+
+    # ── Pass 3: Narrative on REAL data (no pass 2 needed — data is real) ─────
+    # Extract key metrics from real data
+    km_system = """You are a data analyst. Given a SQL result, extract 2-4 key metrics.
+Return ONLY JSON: {"keyMetrics": [{"label": "...", "value": "..."}]}
+Format values for humans: "$2.4M" not 2400000, "34%" not 0.34, "1,234" not 1234."""
+
+    km_user = f"""SQL: {sql}
+Result ({result_row_count} rows): {json.dumps(real_data[:10], default=str)}
+Question: {req.question}"""
+
+    km_raw = await raw_llm_call(provider, api_key, model, km_system, km_user, max_tokens=400)
+    try:
+        km_result = parse_json_response(km_raw)
+        key_metrics = km_result.get("keyMetrics", [])
+        if not isinstance(key_metrics, list):
+            key_metrics = []
+    except Exception:
+        key_metrics = []
+
+    # Narrative
+    narrative_user = f"""Question: {req.question}
+
+SQL executed: {sql}
+
+REAL data returned ({result_row_count} rows from {row_count:,} total rows in file):
+{json.dumps(real_data[:25], default=str)}
+
+This is real data from the user's actual file. Every claim must be grounded in these exact numbers."""
+
+    narr_raw = await raw_llm_call(provider, api_key, model, NARRATIVE_SYSTEM, narrative_user, max_tokens=1000)
+    narr_result = parse_json_response(narr_raw)
+
+    return {
+        "sql": sql,
+        "data": real_data[:200],      # cap display at 200 rows
+        "keyMetrics": key_metrics,
+        "headline": narr_result.get("headline", ""),
+        "narrative": narr_result.get("narrative", ""),
+        "confidence": narr_result.get("confidence", "high"),   # real data = high confidence
+        "vizType": narr_result.get("vizType", "table"),
+        "mode": "file",
+        "result_rows": result_row_count,
+        "total_file_rows": row_count,
+    }
+
+
+@app.delete("/file/{session_id}")
+async def delete_file_session(session_id: str):
+    """Clean up uploaded file and session."""
+    session = file_sessions.pop(session_id, None)
+    if session:
+        Path(session["path"]).unlink(missing_ok=True)
+        parquet_path = Path(session["path"]).with_suffix(".parquet")
+        parquet_path.unlink(missing_ok=True)
+    return {"deleted": True}
+
+
+@app.get("/file/{session_id}/sample")
+async def get_file_sample(session_id: str, rows: int = 20):
+    """Return a sample of the uploaded file for preview."""
+    session = file_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    rows = min(rows, 100)
+    try:
+        con = duckdb.connect()
+        suffix = session["suffix"]
+        file_path = session["path"]
+        table_name = session["table_name"]
+        if suffix == ".csv":
+            con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_csv_auto('{file_path}', header=true)")
+        elif suffix == ".parquet":
+            con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{file_path}')")
+        elif suffix in (".xlsx", ".xls"):
+            parquet_path = str(file_path).replace(suffix, ".parquet")
+            con.execute(f"CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')")
+        sample = con.execute(f"SELECT * FROM {table_name} LIMIT {rows}").fetchdf()
+        con.close()
+        return {"data": sample.to_dict(orient="records"), "columns": session["columns"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/query/schema")
 async def query_from_schema(

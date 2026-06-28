@@ -373,7 +373,9 @@ function AnalystMessage({ msg }) {
       </div>
       <div style={{borderTop:`1px solid ${T.border}`}}>
         <button onClick={()=>setShowSQL(s=>!s)} style={{width:"100%",padding:"11px 20px",background:"none",border:"none",color:T.mutedDark,fontSize:"12px",textAlign:"left",display:"flex",alignItems:"center",gap:"8px"}}>
-          <span style={{color:T.blue,fontFamily:"monospace"}}>SQL</span>{showSQL?"Hide query":"Show generated query"}<span style={{marginLeft:"auto"}}>{showSQL?"↑":"↓"}</span>
+          <span style={{color:T.blue,fontFamily:"monospace"}}>SQL</span>{showSQL?"Hide query":"Show generated query"}
+          {msg.mode==="file" && <span style={{fontSize:"11px",background:"#0D2818",border:"1px solid #10B98130",color:T.green,padding:"2px 8px",borderRadius:"20px",marginLeft:"8px"}}>⚡ Real data</span>}
+          <span style={{marginLeft:"auto"}}>{showSQL?"↑":"↓"}</span>
         </button>
         {showSQL && (
           <div style={{padding:"0 20px 16px"}}>
@@ -709,6 +711,133 @@ function APIKeyPage({ onSaved, onBack }) {
 }
 
 // ─── CONNECT PAGE ─────────────────────────────────────────────────────────────
+// ─── FILE UPLOAD PAGE ─────────────────────────────────────────────────────────
+function FileUploadPage({ onConnected, onBack }) {
+  const [dragging, setDragging]   = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError]         = useState("");
+  const [preview, setPreview]     = useState(null);
+  const fileRef = useRef(null);
+  const ACCEPTED = ".csv,.tsv,.parquet,.xlsx,.xls,.json";
+  const FILE_ICONS = {csv:"📊",tsv:"📊",parquet:"⚡",xlsx:"📗",xls:"📗",json:"📋"};
+
+  async function handleFile(file) {
+    const ext = file.name.split(".").pop().toLowerCase();
+    setError(""); setUploading(true); setPreview(null);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const headers = {};
+      if (_authToken) headers["Authorization"] = `Bearer ${_authToken}`;
+      const res = await fetch(`${BACKEND_URL}/file/upload`, { method:"POST", headers, body:formData });
+      if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.detail||`Upload failed (${res.status})`); }
+      setPreview(await res.json());
+    } catch(e) { setError(e.message); }
+    setUploading(false);
+  }
+
+  function handleDrop(e) { e.preventDefault(); setDragging(false); const f=e.dataTransfer.files[0]; if(f) handleFile(f); }
+  const ext = preview?.filename?.split(".").pop().toLowerCase()||"csv";
+
+  return (
+    <div style={{minHeight:"100vh",background:T.bg,color:T.white,fontFamily:"'DM Sans',system-ui,sans-serif"}}>
+      <style>{GLOBAL_CSS}</style>
+      <div style={{padding:"20px 32px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:"12px"}}>
+        <button onClick={onBack} style={{background:"none",border:"none",color:T.muted,fontSize:"14px",cursor:"pointer"}}>← Back</button>
+        <span style={{color:T.border}}>·</span>
+        <span style={{color:T.white,fontSize:"14px",fontWeight:500}}>Upload your data</span>
+      </div>
+      <div style={{maxWidth:"680px",margin:"0 auto",padding:"48px 24px",animation:"fadeIn 0.4s ease"}}>
+        <h1 style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:"34px",fontWeight:800,letterSpacing:"-0.03em",marginBottom:"8px"}}>Drop in your dataset</h1>
+        <p style={{color:T.muted,fontSize:"14px",marginBottom:"32px",lineHeight:"1.6"}}>CSV, Excel, Parquet, TSV, JSON — any size. QueryMind runs real SQL on your actual data via DuckDB. Nothing is stored except temporarily during your session.</p>
+
+        {!preview && (
+          <div onDragOver={e=>{e.preventDefault();setDragging(true);}} onDragLeave={()=>setDragging(false)}
+            onDrop={handleDrop} onClick={()=>fileRef.current?.click()}
+            style={{border:`2px dashed ${dragging?T.amber:T.borderLight}`,borderRadius:"16px",padding:"48px 32px",textAlign:"center",cursor:"pointer",background:dragging?T.amberDim:"transparent",transition:"all 0.2s",marginBottom:"20px"}}>
+            <div style={{fontSize:"40px",marginBottom:"16px"}}>{uploading?"⏳":"📂"}</div>
+            <div style={{fontSize:"18px",fontWeight:600,color:T.white,marginBottom:"8px",fontFamily:"'Fraunces',Georgia,serif"}}>
+              {uploading?"Uploading and reading schema…":dragging?"Drop it!":"Drag & drop your file here"}
+            </div>
+            <div style={{fontSize:"13px",color:T.muted,marginBottom:"16px"}}>{uploading?"Detecting columns and row count…":"or click to browse"}</div>
+            <div style={{display:"flex",gap:"8px",justifyContent:"center",flexWrap:"wrap"}}>
+              {["CSV","TSV","Excel","Parquet","JSON"].map(f=>(
+                <span key={f} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:"6px",padding:"4px 10px",fontSize:"12px",color:T.muted}}>{f}</span>
+              ))}
+            </div>
+            <input ref={fileRef} type="file" accept={ACCEPTED} style={{display:"none"}} onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
+          </div>
+        )}
+
+        {error && <div style={{background:"#1A0B0B",border:`1px solid ${T.red}30`,borderRadius:"12px",padding:"14px 18px",color:T.red,fontSize:"14px",marginBottom:"16px"}}>✗ {error}</div>}
+
+        {preview && (
+          <div style={{animation:"slideIn 0.35s ease"}}>
+            <div style={{background:T.surface,border:`1px solid ${T.amberBorder}`,borderRadius:"14px",padding:"20px 24px",marginBottom:"20px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"16px"}}>
+                <span style={{fontSize:"28px"}}>{FILE_ICONS[ext]||"📄"}</span>
+                <div>
+                  <div style={{fontWeight:600,fontSize:"15px",color:T.white}}>{preview.filename}</div>
+                  <div style={{fontSize:"12px",color:T.muted,marginTop:"2px"}}>
+                    {preview.file_type} · {preview.file_size_mb} MB · {preview.row_count?.toLocaleString()} rows · {preview.column_count} columns
+                  </div>
+                </div>
+                <span style={{marginLeft:"auto",fontSize:"11px",background:T.amberDim,border:`1px solid ${T.amberBorder}`,color:T.amber,padding:"4px 12px",borderRadius:"20px"}}>✓ Ready</span>
+              </div>
+              <div style={{marginBottom:"14px"}}>
+                <div style={{fontSize:"11px",color:T.mutedDark,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"8px"}}>Detected columns</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+                  {preview.columns?.map(c=>(
+                    <span key={c.name} style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:"6px",padding:"4px 10px",fontSize:"12px"}}>
+                      <span style={{color:T.white}}>{c.name}</span>
+                      <span style={{color:T.mutedDark}}> {c.type}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+              {preview.preview?.length>0 && (
+                <div style={{overflowX:"auto",borderRadius:"8px",border:`1px solid ${T.border}`}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:"12px"}}>
+                    <thead><tr style={{background:T.bg}}>
+                      {Object.keys(preview.preview[0]).slice(0,6).map(k=>(
+                        <th key={k} style={{padding:"8px 12px",textAlign:"left",color:T.mutedDark,fontWeight:600,fontSize:"11px",borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap"}}>{k}</th>
+                      ))}
+                      {Object.keys(preview.preview[0]).length>6&&<th style={{padding:"8px 12px",color:T.mutedDark,fontSize:"11px",borderBottom:`1px solid ${T.border}`}}>+{Object.keys(preview.preview[0]).length-6} more</th>}
+                    </tr></thead>
+                    <tbody>{preview.preview.map((row,i)=>(
+                      <tr key={i}>{Object.values(row).slice(0,6).map((v,j)=>(
+                        <td key={j} style={{padding:"7px 12px",color:T.muted,borderBottom:`1px solid ${T.border}20`,whiteSpace:"nowrap",maxWidth:"180px",overflow:"hidden",textOverflow:"ellipsis"}}>
+                          {v===null||v===undefined?<span style={{color:T.mutedDark}}>null</span>:String(v)}
+                        </td>
+                      ))}</tr>
+                    ))}</tbody>
+                  </table>
+                  <div style={{padding:"6px 12px",fontSize:"11px",color:T.mutedDark,borderTop:`1px solid ${T.border}`}}>
+                    Showing 5 of {preview.row_count?.toLocaleString()} rows
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{display:"flex",gap:"10px"}}>
+              <button onClick={()=>{setPreview(null);setError("");}}
+                style={{padding:"13px 20px",background:"none",border:`1px solid ${T.border}`,borderRadius:"12px",color:T.muted,fontSize:"14px",cursor:"pointer"}}>
+                Upload different file
+              </button>
+              <button onClick={()=>onConnected({
+                mode:"file", sessionId:preview.session_id, dbName:preview.filename,
+                schema:preview.schema_ddl, columns:preview.columns, rowCount:preview.row_count,
+                questions:["What does this dataset look like overall?","Show me the top 10 rows by the main metric","What are the unique values in each categorical column?","Are there any null or missing values?","Show me summary statistics for numeric columns"],
+              })} style={{flex:1,padding:"13px",background:T.amber,border:"none",borderRadius:"12px",color:T.bg,fontSize:"15px",fontWeight:700,fontFamily:"'Fraunces',Georgia,serif",cursor:"pointer"}}>
+                Analyse → {preview.filename}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ConnectPage({ onConnected, onBack }) {
   const [mode, setMode]   = useState("template");
   const [schema, setSchema] = useState("");
@@ -722,32 +851,25 @@ function ConnectPage({ onConnected, onBack }) {
     r.onload = e => { setSchema(e.target.result); setDbName(file.name.replace(/\.[^.]+$/,"")); setMode("paste"); };
     r.readAsText(file);
   }
-
-  function pickTemplate(key) {
-    setSchema(SAMPLE_SCHEMAS[key].sql); setDbName(SAMPLE_SCHEMAS[key].label);
-    setSelected(key); setMode("paste");
-  }
-
+  function pickTemplate(key) { setSchema(SAMPLE_SCHEMAS[key].sql); setDbName(SAMPLE_SCHEMAS[key].label); setSelected(key); setMode("paste"); }
   const ready = schema.trim().length>30 && dbName.trim().length>0;
 
   return (
     <div style={{minHeight:"100vh",background:T.bg,color:T.white,fontFamily:"'DM Sans',system-ui,sans-serif"}}>
       <style>{GLOBAL_CSS}</style>
       <div style={{padding:"20px 32px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:"12px"}}>
-        <button onClick={onBack} style={{background:"none",border:"none",color:T.muted,fontSize:"14px"}}>← Back</button>
+        <button onClick={onBack} style={{background:"none",border:"none",color:T.muted,fontSize:"14px",cursor:"pointer"}}>← Back</button>
         <span style={{color:T.border}}>·</span>
         <span style={{color:T.white,fontSize:"14px",fontWeight:500}}>Connect your database</span>
       </div>
       <div style={{maxWidth:"680px",margin:"0 auto",padding:"48px 24px",animation:"fadeIn 0.4s ease"}}>
-        <h1 style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:"34px",fontWeight:800,letterSpacing:"-0.03em",marginBottom:"8px"}}>What database are we working with?</h1>
+        <h1 style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:"34px",fontWeight:800,letterSpacing:"-0.03em",marginBottom:"8px"}}>What are we working with?</h1>
         <p style={{color:T.muted,fontSize:"14px",marginBottom:"32px"}}>QueryMind only reads your table structure — no data leaves your system.</p>
-
         <div style={{display:"flex",gap:"4px",background:T.surface,border:`1px solid ${T.border}`,borderRadius:"10px",padding:"4px",marginBottom:"24px",width:"fit-content"}}>
           {[{k:"template",l:"Templates"},{k:"paste",l:"Paste SQL"},{k:"string",l:"Connection string"}].map(({k,l})=>(
             <button key={k} onClick={()=>setMode(k)} style={{background:mode===k?T.border:"none",color:mode===k?T.white:T.muted,border:"none",borderRadius:"7px",padding:"8px 16px",fontSize:"13px",fontWeight:mode===k?600:400,transition:"all 0.15s"}}>{l}</button>
           ))}
         </div>
-
         {mode==="template" && (
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:"12px",animation:"slideIn 0.3s ease"}}>
             {Object.entries(SAMPLE_SCHEMAS).map(([key,t])=>(
@@ -761,8 +883,8 @@ function ConnectPage({ onConnected, onBack }) {
               </button>
             ))}
             <button onClick={()=>fileRef.current?.click()}
-              onDragOver={e=>{e.preventDefault();setDragging(true);}}
-              onDragLeave={()=>setDragging(false)} onDrop={e=>{e.preventDefault();setDragging(false);e.dataTransfer.files[0]&&handleFile(e.dataTransfer.files[0]);}}
+              onDragOver={e=>{e.preventDefault();setDragging(true);}} onDragLeave={()=>setDragging(false)}
+              onDrop={e=>{e.preventDefault();setDragging(false);e.dataTransfer.files[0]&&handleFile(e.dataTransfer.files[0]);}}
               style={{background:dragging?T.amberDim:T.surface,border:`2px dashed ${dragging?T.amber:T.borderLight}`,borderRadius:"12px",padding:"20px",textAlign:"left",transition:"all 0.15s"}}>
               <div style={{fontSize:"26px",marginBottom:"10px"}}>📂</div>
               <div style={{fontSize:"14px",fontWeight:600,color:T.white,marginBottom:"4px"}}>Upload .sql file</div>
@@ -771,7 +893,6 @@ function ConnectPage({ onConnected, onBack }) {
             <input ref={fileRef} type="file" accept=".sql,.txt" style={{display:"none"}} onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
           </div>
         )}
-
         {mode==="paste" && (
           <div style={{animation:"slideIn 0.3s ease"}}>
             <div style={{marginBottom:"14px"}}>
@@ -782,7 +903,7 @@ function ConnectPage({ onConnected, onBack }) {
             <div style={{marginBottom:"18px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"7px"}}>
                 <label style={{fontSize:"12px",fontWeight:600,color:T.mutedDark,textTransform:"uppercase",letterSpacing:"0.07em"}}>Schema (CREATE TABLE statements)</label>
-                <button onClick={()=>fileRef.current?.click()} style={{background:"none",border:"none",color:T.amber,fontSize:"12px"}}>Upload file</button>
+                <button onClick={()=>fileRef.current?.click()} style={{background:"none",border:"none",color:T.amber,fontSize:"12px",cursor:"pointer"}}>Upload file</button>
                 <input ref={fileRef} type="file" accept=".sql,.txt" style={{display:"none"}} onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
               </div>
               <textarea value={schema} onChange={e=>setSchema(e.target.value)} rows={12}
@@ -792,18 +913,16 @@ function ConnectPage({ onConnected, onBack }) {
             </div>
           </div>
         )}
-
         {mode==="string" && (
           <div style={{animation:"slideIn 0.3s ease",background:T.surface,border:`1px solid ${T.amberBorder}`,borderRadius:"12px",padding:"22px"}}>
             <div style={{color:T.amber,fontWeight:600,fontSize:"14px",marginBottom:"8px"}}>Live connection — coming soon</div>
-            <p style={{color:T.muted,fontSize:"14px",lineHeight:"1.6",marginBottom:"14px"}}>Direct database connections with real query execution are on the roadmap. For now, paste your CREATE TABLE statements — everything else works the same.</p>
-            <button onClick={()=>setMode("paste")} style={{background:T.amberDim,border:`1px solid ${T.amberBorder}`,color:T.amber,borderRadius:"8px",padding:"8px 16px",fontSize:"13px"}}>Paste schema instead →</button>
+            <p style={{color:T.muted,fontSize:"14px",lineHeight:"1.6",marginBottom:"14px"}}>Direct database connections with real query execution are on the roadmap. For now, paste your CREATE TABLE statements.</p>
+            <button onClick={()=>setMode("paste")} style={{background:T.amberDim,border:`1px solid ${T.amberBorder}`,color:T.amber,borderRadius:"8px",padding:"8px 16px",fontSize:"13px",cursor:"pointer"}}>Paste schema instead →</button>
           </div>
         )}
-
         {ready && (
-          <button onClick={()=>onConnected({schema,dbName,questions:selected?SAMPLE_SCHEMAS[selected].questions:[]})}
-            style={{width:"100%",padding:"15px",background:T.amber,border:"none",borderRadius:"12px",color:T.bg,fontSize:"15px",fontWeight:700,fontFamily:"'Fraunces',Georgia,serif",marginTop:"8px",animation:"slideIn 0.3s ease"}}>
+          <button onClick={()=>onConnected({mode:"schema",schema,dbName,questions:selected?SAMPLE_SCHEMAS[selected].questions:[]})}
+            style={{width:"100%",padding:"15px",background:T.amber,border:"none",borderRadius:"12px",color:T.bg,fontSize:"15px",fontWeight:700,fontFamily:"'Fraunces',Georgia,serif",marginTop:"8px",animation:"slideIn 0.3s ease",cursor:"pointer"}}>
             Start analysing → {dbName}
           </button>
         )}
@@ -818,7 +937,9 @@ function AnalystPage({ db, llmConfig, user, onBack }) {
   const [messages, setMessages] = useState([{
     id: 0, role: "assistant", type: "welcome",
     isPro,
-    text: `I've read ${db.dbName}. Ask me anything about your business, or tap "Generate Dashboard" for a complete overview.`,
+    text: db.mode === "file"
+      ? `I've loaded **${db.dbName}** — ${db.rowCount?.toLocaleString()} rows, ${db.columns?.length} columns. Ask me anything about this data. I'll run real SQL against your actual file.`
+      : `I've read **${db.dbName}**. Ask me anything about your business, or tap "Generate Dashboard" for a complete overview.`,
     questions: db.questions,
     onAsk: () => {},
   }]);
@@ -866,13 +987,20 @@ function AnalystPage({ db, llmConfig, user, onBack }) {
     const iv = setInterval(() => { pi=(pi+1)%phases.length; setLoadingText(phases[pi]); }, 1800);
 
     try {
-      const body = {
-        question,
-        schema_ddl: db.schema,
-        // Pro users: no api_key sent — backend uses QueryMind's key
-        ...(llmConfig ? { provider: llmConfig.provider, api_key: llmConfig.apiKey, model: llmConfig.model } : {}),
-      };
-      const result = await apiFetch("/query/schema", { method:"POST", body: JSON.stringify(body) });
+      const isFile = db.mode === "file";
+      const endpoint = isFile ? "/file/query" : "/query/schema";
+      const body = isFile
+        ? {
+            session_id: db.sessionId,
+            question,
+            ...(llmConfig ? { provider: llmConfig.provider, api_key: llmConfig.apiKey, model: llmConfig.model } : {}),
+          }
+        : {
+            question,
+            schema_ddl: db.schema,
+            ...(llmConfig ? { provider: llmConfig.provider, api_key: llmConfig.apiKey, model: llmConfig.model } : {}),
+          };
+      const result = await apiFetch(endpoint, { method:"POST", body: JSON.stringify(body) });
       setMessages(prev => [...prev, { id:idRef.current++, role:"assistant", type:"result", ...result }]);
     } catch (err) {
       setMessages(prev => [...prev, { id:idRef.current++, role:"assistant", type:"error", text: err.message || "Something went wrong. Try rephrasing your question." }]);
@@ -976,21 +1104,68 @@ export default function QueryMind() {
   const [db, setDb]               = useState(null);
   const [llmConfig, setLlmConfig] = useState(null);
 
-  // Pro users skip the API key screen — backend uses QueryMind's key
   function handleStartFree() {
-    if (user?.is_pro) { setPage("connect"); return; }
+    if (user?.is_pro) { setPage("source"); return; }
     setPage("apikey");
   }
-
   function handleAuth(u) {
-    if (u.is_pro) { setLlmConfig(null); setPage("connect"); }
-    else           { setPage("apikey"); }
+    if (u.is_pro) { setLlmConfig(null); setPage("source"); }
+    else { setPage("apikey"); }
+  }
+  function handleConnected(data) {
+    if (!data) { setPage("source"); return; }
+    setDb(data); setPage("analyst");
   }
 
   if (page==="landing")  return <LandingPage onStart={handleStartFree} onSignIn={()=>setPage("auth")}/>;
   if (page==="auth")     return <AuthPage onAuth={handleAuth} onBack={()=>setPage("landing")}/>;
-  if (page==="apikey")   return <APIKeyPage onSaved={cfg=>{setLlmConfig(cfg);setPage("connect");}} onBack={()=>setPage("landing")}/>;
-  if (page==="connect")  return <ConnectPage onConnected={data=>{if(!data){setPage(user?.is_pro?"landing":"apikey");return;}setDb(data);setPage("analyst");}} onBack={()=>setPage(user?.is_pro?"landing":"apikey")}/>;
-  if (page==="analyst")  return <AnalystPage db={db} llmConfig={llmConfig} user={user} onBack={()=>setPage("connect")}/>;
+  if (page==="apikey")   return <APIKeyPage onSaved={cfg=>{setLlmConfig(cfg);setPage("source");}} onBack={()=>setPage("landing")}/>;
+
+  if (page==="source") return (
+    <div style={{minHeight:"100vh",background:T.bg,color:T.white,fontFamily:"'DM Sans',system-ui,sans-serif"}}>
+      <style>{GLOBAL_CSS}</style>
+      <div style={{padding:"20px 32px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:"12px"}}>
+        <button onClick={()=>setPage("landing")} style={{background:"none",border:"none",color:T.muted,fontSize:"14px",cursor:"pointer"}}>← QueryMind</button>
+        <span style={{color:T.border}}>·</span>
+        <span style={{color:T.white,fontSize:"14px",fontWeight:500}}>Choose your data source</span>
+      </div>
+      <div style={{maxWidth:"640px",margin:"0 auto",padding:"64px 24px",animation:"fadeIn 0.4s ease"}}>
+        <h1 style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:"34px",fontWeight:800,letterSpacing:"-0.03em",marginBottom:"8px"}}>What are we analysing?</h1>
+        <p style={{color:T.muted,fontSize:"15px",marginBottom:"40px"}}>Pick a data source — QueryMind works the same way either way.</p>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"16px"}}>
+          <button onClick={()=>setPage("upload")}
+            style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:"16px",padding:"28px 24px",textAlign:"left",cursor:"pointer",transition:"all 0.2s"}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=T.amber;e.currentTarget.style.background=T.amberDim;}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.background=T.surface;}}>
+            <div style={{fontSize:"32px",marginBottom:"14px"}}>📂</div>
+            <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:"18px",fontWeight:700,color:T.white,marginBottom:"8px"}}>Upload a file</div>
+            <div style={{fontSize:"13px",color:T.muted,lineHeight:"1.6"}}>CSV, Excel, Parquet, TSV, JSON. Any size. Queries your actual data — no guessing.</div>
+            <div style={{marginTop:"14px",display:"flex",gap:"6px",flexWrap:"wrap"}}>
+              {["CSV","XLSX","Parquet","TSV","JSON"].map(f=>(
+                <span key={f} style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:"4px",padding:"2px 8px",fontSize:"11px",color:T.muted}}>{f}</span>
+              ))}
+            </div>
+          </button>
+          <button onClick={()=>setPage("connect")}
+            style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:"16px",padding:"28px 24px",textAlign:"left",cursor:"pointer",transition:"all 0.2s"}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=T.amber;e.currentTarget.style.background=T.amberDim;}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.background=T.surface;}}>
+            <div style={{fontSize:"32px",marginBottom:"14px"}}>🗄️</div>
+            <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:"18px",fontWeight:700,color:T.white,marginBottom:"8px"}}>SQL database</div>
+            <div style={{fontSize:"13px",color:T.muted,lineHeight:"1.6"}}>Paste your schema or pick a template. Works with MySQL, PostgreSQL, SQLite.</div>
+            <div style={{marginTop:"14px",display:"flex",gap:"6px",flexWrap:"wrap"}}>
+              {["MySQL","PostgreSQL","SQLite","Templates"].map(f=>(
+                <span key={f} style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:"4px",padding:"2px 8px",fontSize:"11px",color:T.muted}}>{f}</span>
+              ))}
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (page==="upload")   return <FileUploadPage onConnected={handleConnected} onBack={()=>setPage("source")}/>;
+  if (page==="connect")  return <ConnectPage onConnected={handleConnected} onBack={()=>setPage("source")}/>;
+  if (page==="analyst")  return <AnalystPage db={db} llmConfig={llmConfig} user={user} onBack={()=>setPage("source")}/>;
   return null;
 }
