@@ -105,7 +105,7 @@ This step is the same regardless of which backend option you chose.
 
 6. Click **Deploy**
 
-You'll get a URL like `https://querymind.vercel.app`.
+You'll get a URL like `https://querymind-ten.vercel.app` — that's your live product.
 
 ---
 

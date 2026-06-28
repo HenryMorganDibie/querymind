@@ -4,6 +4,8 @@
 
 **Your AI business analyst. Ask questions in English. Get charts, insights, and decisions.**
 
+[![Live Demo](https://img.shields.io/badge/LIVE_DEMO-querymind--ten.vercel.app-F5A623?style=for-the-badge&logo=vercel&logoColor=black)](https://querymind-ten.vercel.app)
+
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
