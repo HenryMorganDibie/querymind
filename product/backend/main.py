@@ -210,9 +210,9 @@ def validate_sql(sql: str) -> str:
 
     return cleaned
 
-# ── Schema parser — prevents hallucinated column/table names ──────────────────
+# ── Schema parser ─────────────────────────────────────────────────────────────
 def extract_schema_summary(ddl: str) -> str:
-    """Parse DDL into a strict column inventory the LLM must use."""
+    """Parse DDL into a strict column inventory the LLM must reference."""
     lines = []
     current_table = None
     for line in ddl.splitlines():
@@ -227,104 +227,40 @@ def extract_schema_summary(ddl: str) -> str:
         elif current_table and stripped and not upper.startswith(
             ("PRIMARY", "FOREIGN", "UNIQUE", "INDEX", "KEY", "--", ")", "CONSTRAINT", "CHECK")
         ):
-            col = stripped.split()[0].strip("`\"'[],()")
-            col_rest = " ".join(stripped.split()[1:3]).rstrip(",").strip()
-            if col and col.upper() not in ("CONSTRAINT", "CHECK", "INDEX"):
-                lines.append(f"    - {col}  [{col_rest}]")
+            col = stripped.split()[0].strip("`\"'[],();")
+            col_def = " ".join(stripped.split()[1:3]).rstrip(",").strip()
+            if col and col.upper() not in ("CONSTRAINT", "CHECK", "INDEX", "UNIQUE"):
+                lines.append(f"    - {col}  [{col_def}]")
         elif stripped.startswith(")"):
             current_table = None
-    return "\n".join(lines) if lines else "(schema could not be parsed — use DDL above)"
+    return "\n".join(lines) if lines else "(use the DDL above)"
 
 
-# ── LLM caller ────────────────────────────────────────────────────────────────
-SYSTEM_PROMPT_TEMPLATE = """You are QueryMind — a precise SQL analyst and business interpreter.
-
-DATABASE SCHEMA (DDL):
-{schema}
-
-VALID TABLES AND COLUMNS — you may ONLY use these:
-{schema_summary}
-
-YOUR TASK:
-Write a SQL SELECT query answering the question, generate realistic sample data the query would return, then interpret the results as a senior analyst briefing a founder.
-
-ANTI-HALLUCINATION RULES — breaking these breaks the product:
-- Use ONLY table and column names listed in VALID TABLES AND COLUMNS above. Never invent names.
-- keyMetrics values MUST appear in the data array. Do not fabricate standalone numbers.
-- Numbers must be internally consistent: individual rows must aggregate to totals.
-- If a question cannot be answered from the schema, set confidence="low" and explain what data is missing.
-
-SQL RULES:
-- SELECT or WITH (CTE) only. No INSERT/UPDATE/DELETE/DROP/ALTER.
-- MySQL-compatible syntax.
-- Always include LIMIT (max 50).
-- Aggregate functions (SUM/COUNT/AVG) must have matching GROUP BY.
-- Only JOIN tables that exist in the schema.
-
-vizType selection (must match the data shape):
-- "area"  → time-series data with dates/months/years
-- "bar"   → ranked list (2-20 rows, one label + one number column)
-- "pie"   → composition (2-7 categories max)
-- "stat"  → single row, single value
-- "stats" → single row, 2-4 values
-- "table" → multi-column detail (more than 2 columns or more than 20 rows)
-- "line"  → trend over many data points
-
-RESPOND WITH ONLY THIS JSON — no markdown, no backticks, no text outside the braces:
-{{
-  "sql": "SELECT ...",
-  "data": [...up to 15 rows, numbers internally consistent...],
-  "keyMetrics": [{{"label": "Total Revenue", "value": "$2.4M"}}],
-  "headline": "One direct factual sentence — e.g. Electronics drives 42% of revenue at 34% margin",
-  "narrative": "4-6 sentences: main finding → business implication → what to watch → recommended action",
-  "confidence": "high | medium | low",
-  "vizType": "bar | line | area | pie | table | stat | stats"
-}}"""
-
-DASHBOARD_SYSTEM_PROMPT = """You are QueryMind — a precise SQL analyst and business interpreter.
-
-DATABASE SCHEMA (DDL):
-{schema}
-
-VALID TABLES AND COLUMNS — you may ONLY use these:
-{schema_summary}
-
-Generate 4-6 dashboard panels giving a complete business overview. Each panel must cover a DIFFERENT angle (e.g. revenue trend, top products, customer breakdown, order status, profitability).
-
-ANTI-HALLUCINATION RULES:
-- Use ONLY tables and columns in VALID TABLES AND COLUMNS above.
-- keyMetrics values MUST come from the data array in that panel.
-- Numbers must be consistent ACROSS panels: total orders cannot be 1,200 in one panel and 3,000 in another.
-- If a panel cannot be answered from the schema, set confidence="low".
-
-SQL RULES: SELECT or WITH only. LIMIT 50 max. MySQL-compatible.
-
-RESPOND WITH ONLY THIS JSON — no markdown, no backticks:
-{{
-  "title": "Dashboard title",
-  "summary": "2-3 sentence executive summary of overall business health",
-  "panels": [
-    {{
-      "id": 1,
-      "title": "Panel title",
-      "sql": "SELECT ...",
-      "data": [...up to 12 rows...],
-      "keyMetrics": [{{"label": "...", "value": "..."}}],
-      "headline": "Direct factual one-sentence finding",
-      "narrative": "2-3 sentences: finding → implication → caveat",
-      "vizType": "bar | line | area | pie | table | stat | stats",
-      "confidence": "high | medium | low"
-    }}
-  ]
-}}"""
+def parse_json_response(raw: str) -> dict:
+    """Strip markdown fences and parse JSON. Raise HTTPException on failure."""
+    clean = raw.strip()
+    for fence in ("```json", "```JSON", "```"):
+        clean = clean.replace(fence, "")
+    clean = clean.strip()
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", clean)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+    raise HTTPException(
+        status_code=502,
+        detail=f"LLM returned malformed JSON. Preview: {clean[:500]}"
+    )
 
 
-async def call_llm(provider: str, api_key: str, model: str, schema: str, question: str,
-                   system_override: str = None) -> dict:
-    schema_summary = extract_schema_summary(schema)
-    base = system_override or SYSTEM_PROMPT_TEMPLATE
-    system = base.format(schema=schema, schema_summary=schema_summary)
-
+async def raw_llm_call(provider: str, api_key: str, model: str,
+                       system: str, user_msg: str,
+                       max_tokens: int = 2000) -> str:
+    """Single raw LLM call. Returns text content."""
     async with httpx.AsyncClient(timeout=90.0) as client:
         if provider == "claude":
             resp = await client.post(
@@ -336,14 +272,14 @@ async def call_llm(provider: str, api_key: str, model: str, schema: str, questio
                 },
                 json={
                     "model": model,
-                    "max_tokens": 4000,
+                    "max_tokens": max_tokens,
                     "temperature": 0,
                     "system": system,
-                    "messages": [{"role": "user", "content": question}],
+                    "messages": [{"role": "user", "content": user_msg}],
                 },
             )
             resp.raise_for_status()
-            raw = "".join(b.get("text", "") for b in resp.json().get("content", []))
+            return "".join(b.get("text", "") for b in resp.json().get("content", []))
 
         elif provider in ("groq", "openai"):
             url = (
@@ -356,57 +292,178 @@ async def call_llm(provider: str, api_key: str, model: str, schema: str, questio
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "model": model,
-                    "max_tokens": 4000,
+                    "max_tokens": max_tokens,
                     "temperature": 0,
                     "messages": [
                         {"role": "system", "content": system},
-                        {"role": "user", "content": question},
+                        {"role": "user", "content": user_msg},
                     ],
                 },
             )
             resp.raise_for_status()
-            raw = resp.json()["choices"][0]["message"]["content"]
+            return resp.json()["choices"][0]["message"]["content"]
 
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
-    # Strip markdown fences if present
-    clean = raw.strip()
-    for fence in ("```json", "```JSON", "```"):
-        clean = clean.replace(fence, "")
-    clean = clean.strip()
 
-    # Parse JSON
+# ── Three-pass pipeline ────────────────────────────────────────────────────────
+# Pass 1: SQL generation
+SQL_SYSTEM = """You are a senior SQL engineer. Your ONLY job is to write one correct SQL query.
+
+DATABASE SCHEMA:
+{schema}
+
+VALID TABLES AND COLUMNS (use ONLY these — no others):
+{schema_summary}
+
+RULES:
+- Output ONLY a JSON object with one key: "sql"
+- SELECT or WITH only. Never INSERT/UPDATE/DELETE/DROP/ALTER.
+- MySQL-compatible. Use proper JOINs, GROUP BY with aggregates, LIMIT 50 max.
+- Only reference tables and columns from VALID TABLES AND COLUMNS above.
+- If the question cannot be answered from the schema, set sql to empty string "" and add "impossible": true.
+
+Output format — ONLY this JSON, nothing else:
+{{"sql": "SELECT ...", "impossible": false}}"""
+
+# Pass 2: Data generation
+DATA_SYSTEM = """You are a data simulation expert. Given a SQL query and the database schema, generate realistic sample data that the query WOULD return if run against a real populated database.
+
+RULES:
+- Return ONLY a JSON object with key "data" (array of row objects) and "keyMetrics" (array of {{label, value}} objects).
+- Column names in data rows MUST exactly match the SELECT column aliases in the SQL.
+- Numbers must be internally consistent: if you show subtotals, they must sum to totals.
+- keyMetrics must be derived from the data — pick the 2-4 most important numbers.
+- Format keyMetrics values for humans: "$2.4M" not "2400000", "34%" not "0.34".
+- Generate 8-15 rows for lists, 1-4 rows for aggregate summaries.
+- Make the data realistic for a real business — not toy numbers.
+
+Output format — ONLY this JSON:
+{{"data": [...], "keyMetrics": [{{"label": "...", "value": "..."}}]}}"""
+
+# Pass 3: Narrative generation  
+NARRATIVE_SYSTEM = """You are a senior business analyst briefing a founder. Given a business question, SQL query, and the actual data results, write an honest interpretation.
+
+RULES:
+- Base EVERY claim on the data provided. Never add information not in the data.
+- headline: one direct factual sentence stating the single most important finding. No vague titles.
+  Good: "Electronics drives 42% of revenue but margins are 18 points below Apparel"
+  Bad: "Revenue Analysis" or "Interesting revenue trends"
+- narrative: 4-6 sentences structured as:
+  1. Main finding (what the data shows)
+  2. Business implication (what this means for the company)
+  3. Second insight or comparison from the data
+  4. Risk or caveat (what this data doesn't tell us or what to watch)
+  5-6. Recommended action or next question to investigate
+- confidence: "high" if schema directly supports the question, "medium" if assumptions were needed, "low" if the schema lacked key data
+- vizType: choose based purely on data shape:
+  "area" = time-series (dates/months), "bar" = ranked list ≤20 rows, "pie" = composition ≤7 categories,
+  "stat" = single number, "stats" = 2-4 numbers on one row, "table" = multi-column or >20 rows, "line" = many time points
+
+Output format — ONLY this JSON:
+{{"headline": "...", "narrative": "...", "confidence": "high|medium|low", "vizType": "..."}}"""
+
+
+async def call_llm(provider: str, api_key: str, model: str, schema: str, question: str,
+                   system_override: str = None) -> dict:
+    """
+    Three-pass pipeline for accuracy:
+    1. SQL generation (focused, schema-grounded)
+    2. Data simulation (consistent, realistic)
+    3. Narrative (grounded in the actual data)
+
+    Falls back to single-pass for dashboard calls (system_override set).
+    """
+    schema_summary = extract_schema_summary(schema)
+
+    # Dashboard / override: single pass (dashboard prompt handles its own structure)
+    if system_override:
+        system = system_override.format(schema=schema, schema_summary=schema_summary)
+        raw = await raw_llm_call(provider, api_key, model, system, question, max_tokens=6000)
+        result = parse_json_response(raw)
+        if "panels" in result:
+            for p in result["panels"]:
+                if not isinstance(p.get("data"), list):
+                    p["data"] = []
+                if not isinstance(p.get("keyMetrics"), list):
+                    p["keyMetrics"] = []
+        return result
+
+    # ── Pass 1: SQL ───────────────────────────────────────────────────────────
+    sql_system = SQL_SYSTEM.format(schema=schema, schema_summary=schema_summary)
+    sql_raw = await raw_llm_call(provider, api_key, model, sql_system, question, max_tokens=800)
+    sql_result = parse_json_response(sql_raw)
+    sql = sql_result.get("sql", "").strip()
+    impossible = sql_result.get("impossible", False)
+
+    if impossible or not sql:
+        return {
+            "sql": "",
+            "data": [],
+            "keyMetrics": [],
+            "headline": "This question cannot be answered from the available schema",
+            "narrative": (
+                "The database schema does not contain the tables or columns needed to answer this question. "
+                f"The question asks about data that isn't tracked in your schema. "
+                "Consider adding the relevant tables or columns, or rephrase the question "
+                "to use data that is available."
+            ),
+            "confidence": "low",
+            "vizType": "stat",
+        }
+
+    # Validate SQL safety before passing to data generation
     try:
-        result = json.loads(clean)
-    except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", clean)
-        if match:
-            try:
-                result = json.loads(match.group())
-            except json.JSONDecodeError:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"LLM returned malformed JSON. Preview: {clean[:400]}"
-                )
-        else:
-            raise HTTPException(
-                status_code=502,
-                detail=f"No JSON in LLM response. Preview: {clean[:400]}"
-            )
+        sql = validate_sql(sql)
+    except HTTPException as e:
+        raise HTTPException(status_code=400, detail=f"Generated SQL failed safety check: {e.detail}")
 
-    # For single-query responses, validate required fields and types
-    if "panels" not in result:
-        required = ["sql", "data", "headline", "narrative", "confidence", "vizType"]
-        missing = [f for f in required if f not in result]
-        if missing:
-            raise HTTPException(status_code=502, detail=f"LLM response missing fields: {missing}")
-        if not isinstance(result.get("data"), list):
-            result["data"] = []
-        if not isinstance(result.get("keyMetrics"), list):
-            result["keyMetrics"] = []
+    # ── Pass 2: Data ──────────────────────────────────────────────────────────
+    data_user_msg = f"""SQL query:
+{sql}
 
-    return result
+Original question: {question}
+
+Database schema:
+{schema_summary}
+
+Generate realistic sample data this query would return from a real populated database."""
+
+    data_raw = await raw_llm_call(provider, api_key, model, DATA_SYSTEM, data_user_msg, max_tokens=3000)
+    data_result = parse_json_response(data_raw)
+    data = data_result.get("data", [])
+    key_metrics = data_result.get("keyMetrics", [])
+    if not isinstance(data, list):
+        data = []
+    if not isinstance(key_metrics, list):
+        key_metrics = []
+
+    # ── Pass 3: Narrative ─────────────────────────────────────────────────────
+    narrative_user_msg = f"""Business question: {question}
+
+SQL that was run:
+{sql}
+
+Data returned ({len(data)} rows):
+{json.dumps(data[:20], default=str)}
+
+Key metrics extracted:
+{json.dumps(key_metrics, default=str)}
+
+Write an honest, accurate business interpretation grounded entirely in this data."""
+
+    narr_raw = await raw_llm_call(provider, api_key, model, NARRATIVE_SYSTEM, narrative_user_msg, max_tokens=1000)
+    narr_result = parse_json_response(narr_raw)
+
+    return {
+        "sql": sql,
+        "data": data,
+        "keyMetrics": key_metrics,
+        "headline": narr_result.get("headline", ""),
+        "narrative": narr_result.get("narrative", ""),
+        "confidence": narr_result.get("confidence", "medium"),
+        "vizType": narr_result.get("vizType", "table"),
+    }
 
 
 def resolve_llm_config(req_provider, req_api_key, req_model, user: Optional[dict]) -> tuple[str, str, str]:
