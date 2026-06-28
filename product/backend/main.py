@@ -19,6 +19,7 @@ from typing import Optional
 
 import duckdb
 import httpx
+import pandas as pd
 import stripe
 from fastapi import Depends, FastAPI, File, HTTPException, Header, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -694,17 +695,12 @@ async def upload_file(file: UploadFile = File(...)):
                 CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{save_path}')
             """)
         elif suffix in (".xlsx", ".xls"):
-            # DuckDB doesn't read Excel natively — convert via pandas first
-            try:
-                import pandas as pd
-                df = pd.read_excel(save_path, engine="openpyxl")
-                parquet_path = UPLOAD_DIR / f"{session_id}.parquet"
-                df.to_parquet(parquet_path, index=False)
-                con.execute(f"""
-                    CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')
-                """)
-            except ImportError:
-                raise HTTPException(status_code=500, detail="pandas not available for Excel conversion")
+            parquet_path = UPLOAD_DIR / f"{session_id}.parquet"
+            df = pd.read_excel(save_path, engine="openpyxl")
+            df.to_parquet(parquet_path, index=False)
+            con.execute(f"""
+                CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')
+            """)
         elif suffix == ".json":
             con.execute(f"""
                 CREATE VIEW {table_name} AS
